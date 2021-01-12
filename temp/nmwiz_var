@@ -7,7 +7,7 @@ MUTT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/mutt"
 MUTT_SHARE_DIR="$MUTT_DIR/share"
 ACC_DIR="$MUTT_DIR/acc"
 MUTTRC_LOC="$MUTT_DIR/muttrc"
-NMWIZ_DEFAULT_LOC="$MUTT_DIR/nmwiz_default.muttrc"
+NMWIZ_DEFAULT_LOC="$MUTT_DIR/nmwiz_def.muttrc"
 
 MSMTP_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/msmtp"
 MSMTPRC_LOC="$MSMTP_DIR/config"

@@ -1,0 +1,402 @@
+#!/bin/bash
+
+PASSWORD_PREFIX="nmwiz-"
+EMAIL_REGEX=".+@.+\..+"
+
+MUTT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/mutt"
+MUTT_SHARE_DIR="$MUTT_DIR/share"
+ACC_DIR="$MUTT_DIR/acc"
+MUTTRC_LOC="$MUTT_DIR/muttrc"
+NMWIZ_DEFAULT_LOC="$MUTT_DIR/nmwiz_def.muttrc"
+
+MSMTP_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/msmtp"
+MSMTPRC_LOC="$MSMTP_DIR/config"
+MSMTP_LOG_LOC="$MSMTP_DIR/msmtp.log"
+
+MBSYNC_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/mbsync"
+MBSYNCRC_LOC="$MBSYNC_DIR/.mbsyncrc"
+
+MAIL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/mail"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/nmwiz"
+PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
+
+MARKER="# nmwwiz-autogen"
+
+# for online mails
+# ONLINE=True
+
+alias mbsync='mbsync -c "$MBSYNCRC_LOC"'
+
+imessage() { tput setaf 6; echo $1; tput sgr0 ;}
+kmessage() { tput setaf 5; echo $1; tput sgr0 ;}
+emessage() { tput setaf 1; echo $1; tput sgr0 ;}
+
+# ########## CHECK ##########
+
+set_installer() {
+    imessage "[ AUTOSET ] setting package manager"
+    . /etc/os-release
+    case $ID in
+        void) PM_INSTALL="sudo xbps-install -Sy" ;;
+        *) imessage "[ ERROR ] distro not recognized"; exit 1 ;;
+    esac
+}
+
+check_cert() {
+    imessage "[ AUTOCHK ] checking certificates"
+    for x in "/etc/ssl/certs/ca-certificates.crt" \
+        "/etc/pki/tls/certs/ca-bundle.crt" \
+        "/etc/ssl/ca-bundle.pem" \
+        "/etc/pki/tls/cacert.pem" \
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem" \
+        "/etc/ssl/cert.pem" \
+        "/usr/local/share/ca-certificates/"; do
+        [ -f $x ] && SSL_CERT=$x && break
+    done || {
+        echo "ca certificates not found"
+        echo "please install one or link it to /etc/ssl/certs/ca-certificates.crt"
+        exit 1
+    }
+}
+
+check_dep() {
+    imessage "[ AUTOCHK ] checking dependency: neomutt"
+    command -V neomutt >/dev/null 2>&1 || $PM_INSTALL neomutt
+    imessage "[ AUTOCHK ] checking dependency: gpg2"
+    command -V gpg2 >/dev/null 2>&1 || $PM_INSTALL gnupg2
+    imessage "[ AUTOCHK ] checking dependency: pass"
+    command -V pass >/dev/null 2>&1 || $PM_INSTALL pass
+    imessage "[ AUTOCHK ] checking dependency: isync"
+    command -V mbsync >/dev/null 2>&1 || $PM_INSTALL isync
+    imessage "[ AUTOCHK ] checking dependency: msmtp"
+    command -V msmtp >/dev/null 2>&1 || $PM_INSTALL msmtp
+}
+
+check_gpg() {
+    imessage "[ AUTOCHK ] checking gpg secret keys"
+    [ "$(gpg2 --list-secret-keys)" ] >/dev/null 2>&1 || {
+        emessage "[ ERROR ] no gpg secret keys"
+        emessage "[ RUN ] gpg2 --full-gen-key"
+        exit 1
+    }
+    imessage "[ AUTOCHK ] checking pass secret keys"
+    [ -r $PASSWORD_STORE_DIR/.gpg-id ] && 
+        gpg2 --list-secret-keys $(cat $PASSWORD_STORE_DIR/.gpg-id) >/dev/null 2>&1 || {
+        emessage "[ ERROR ] no pass secret keys"
+        emessage "[ RUN ] pass init <gpg@email.com>"
+        exit 1
+        }
+}
+
+# ########## LIST ##########
+
+get_acc() {
+    ACCOUNTS="$(find -L "$ACC_DIR" -type f | grep -o "[0-9]-.*.muttrc" | sed "s/-/: /;s/\.muttrc$//" | sort -n)"
+}
+
+list_acc() {
+    get_acc &&
+        [ -n "$ACCOUNTS" ] &&
+        echo "$ACCOUNTS"
+}
+
+# ########## ADD ##########
+
+ask_info() {
+    imessage "[ INSERT ] full email address <your@email.com>" &&
+        read -r FULL_ADDR
+    while ! echo $FULL_ADDR | grep -qE $EMAIL_REGEX; do
+        emessage "[ ERROR ] not a valid email address, please retype"
+        imessage "[ INSERT ] full email address <your@email.com>"
+        read -r FULL_ADDR
+    done
+    [ -f $MBSYNCRC_LOC ] && grep -q "Channel\s*$FULL_ADDR" "$MBSYNCRC_LOC" && {
+        emessage "[ EXIT ] $FULL_ADDR already added"
+        exit 1
+    }
+    parse_dict
+    [ "$SMTP_PORT" = 465 ] && TLS_LINE="tls_starttls off"
+    [ -z $REAL_NAME ] && REAL_NAME="${FULL_ADDR%%@*}"
+    LOGIN="${LOGIN:-$FULL_ADDR}"
+    if [ -n "${PASSWORD+x}" ]; then
+        create_passw
+    else
+        get_passw
+    fi
+}
+
+parse_dict() {
+    [ -f "$MUTT_SHARE_DIR/dict.csv" ] && {
+        SERVER_INFO="$(grep "^{$FULL_ADDR#*@}" "$MUTT_SHARE_DIR/dict.csv" 2>/dev/null)"
+        [ -z "$SERVER_INFO" ] && SERVER_INFO="$(grep "$(echo "${FULL_ADDR#*@}" | sed "s/\.[^\.]*$/\.\\\*/")" "$MUTT_SHARE_DIR/dict.csv" 2>/dev/null)"
+        [ -z "$SERVER_INFO" ] && {
+            emessage "[ ERROR ] $FULL_ADDR not found in $MUTT_SHARE_DIR/dict.csv"
+            emessage "[ SUGST ] add (address,imap/smtp addresses,imap/smtp port #s) to $MUTT_SHARE_DIR/dict.csv"
+            exit 1
+        } 
+        IFS=, read -r SERVICE IMAP_ADDRESS IMAP_PORT SMTP_ADDRESS SMTP_PORT << EOF
+$SERVER_INFO
+EOF
+        kmessage "[ FOUND ] service: $SERVICE"
+        kmessage "[ FOUND ] imap address: $IMAP_ADDRESS"
+        kmessage "[ FOUND ] imap port #: $IMAP_PORT"
+        kmessage "[ FOUND ] smtp address: $SMTP_ADDRESS"
+        kmessage "[ FOUND ] smtp port #: $SMTP_PORT"
+    } || {
+        emessage "[ ERROR ] $MUTT_SHARE_DIR/dict.csv does not exist"
+        exit 1
+    }
+}
+
+create_passw() {
+    echo "$PASSWORD" > "$PASSWORD_STORE_DIR/$PASSWORD_PREFIX$FULL_ADDR"
+    gpg2 -qer "$(cat "$PASSWORD_STORE_DIR/.gpg-id")" "$PASSWORD_STORE_DIR/$PASSWORD_PREFIX$FULL_ADDR"
+    rm -f "$PASSWORD_STORE_DIR/$PASSWORD_PREFIX$FULL_ADDR"
+}
+
+get_passw() {
+    while : ; do
+        pass rm -f "$PASSWORD_PREFIX$FULL_ADDR" >/dev/null 2>&1
+        pass insert "$PASSWORD_PREFIX$FULL_ADDR" && break
+    done
+}
+
+get_profiles() {
+    unset MSMTP_HEADER
+    unset MSMTP_PROFILE
+    unset MBSYNC_PROFILE
+    unset MUTT_PROFILE
+    case "$IMAP_PORT" in
+        1143) IMAP_SSL=None ;;
+        143) IMAP_SSL=STARTTLS ;;
+    esac
+
+MSMTP_HEADER="defaults
+auth on
+tls on
+tls_trust_file $SSL_CERT
+logfile $MSMTP_LOG_LOC
+"
+
+MSMTP_PROFILE="account $FULL_ADDR
+host $SMTP_ADDRESS
+port ${SMTP_PORT:-587}
+from $FULL_ADDR
+user $LOGIN
+passwordeval \"pass $PASSWORD_PREFIX$FULL_ADDR\"
+$TLS_LINE
+"
+MBSYNC_PROFILE="IMAPStore $FULL_ADDR-remote
+Host $IMAP_ADDRESS
+Port ${IMAP_PORT:-993}
+User $LOGIN
+PassCmd \"pass $PASSWORD_PREFIX$FULL_ADDR\"
+AuthMechs LOGIN
+SSLType ${IMAP_SSL:-IMAPS}
+CertificateFile $SSL_CERT
+
+MaildirStore $FULL_ADDR-local
+Subfolders Verbatim
+Path ${XDG_DATA_HOME:-$HOME/.local/share}/mail/$FULL_ADDR
+Inbox ${XDG_DATA_HOME:-$HOME/.local/share}/mail/$FULL_ADDR/INBOX
+Flatten .
+
+Channel $FULL_ADDR
+Expunge Both
+Master :$FULL_ADDR-remote:
+Slave :$FULL_ADDR-local:
+Patterns * !\"[Gmail]/All Mail\"
+Create Both
+SyncState *
+MaxMessages ${maxmes:-0}
+ExpireUnread no
+# end profile
+"
+
+if [ -z "${ONLINE+x}" ]; then
+MUTT_PROFILE="set realname = \"$REAL_NAME\"
+set from = \"$FULL_ADDR\"
+set sendmail = \"msmtp -a $FULL_ADDR\"
+alias me $REAL_NAME <$FULL_ADDR>
+set folder = \"$MAIL_DIR/$FULL_ADDR\"
+set header_cache = \"$CACHE_DIR/$FULL_ADDR/headers\"
+set message_cachedir = \"$CACHE_DIR/$FULL_ADDR/bodies\"
+set mbox_type = Maildir
+
+bind index,pager gg noop
+bind index,pager g noop
+bind index,pager M noop
+bind index,pager C noop
+bind index gg first-entry
+macro index o \"<shell-escape>nmwiz_sync $FULL_ADDR<enter>\" \"run mbsync to sync $FULL_ADDR\"
+unmailboxes *
+unalternates *
+"
+else
+MUTT_PROFILE="set realname = \"$REAL_NAME\"
+set from = \"$FULL_ADDR\"
+set sendmail = \"msmtp -a $FULL_ADDR\"
+alias me $REAL_NAME <$FULL_ADDR>
+set folder = \"imaps://$LOGIN@$IMAP_ADDRESS:${IMAP_PORT:-993}\"
+set imap_user = \"$LOGIN\"
+set header_cache = \"$CACHE_DIR/$FULL_ADDR/headers\"
+set message_cachedir = \"$CACHE_DIR/$FULL_ADDR/bodies\"
+set imap_pass = \"\`pass $PASSWORD_PREFIX$FULL_ADDR\`\"
+
+set mbox_type = Maildir
+set ssl_starttls = yes
+set ssl_force_tls = yes
+
+bind index,pager gg noop
+bind index,pager g noop
+bind index,pager M noop
+bind index,pager C noop
+bind index gg first-entry
+unmailboxes *
+"
+fi
+}
+
+write_info() {
+    mkdir -p "$ACC_DIR"
+    mkdir -p "$CACHE_DIR/$FULL_ADDR/bodies"
+    mkdir -p "$MSMTP_DIR"
+    mkdir -p "$MAIL_DIR/$FULL_ADDR"
+
+    get_acc
+    for x in $(seq 1 9); do
+        echo "$ACCOUNTS" | grep -q "$x" || {
+            export ID_NUM="$x"
+            break
+        }
+    done
+
+    [ ! -f "$MSMTPRC_LOC" ] && echo "MSMTP_HEADER" > "$MSMTPRC_LOC"
+    echo "$MSMTP_PROFILE" >> "$MSMTPRC_LOC"
+
+    [ -z "${ONLINE+x}" ] &&
+        mkdir -p "${MBSYNC_DIR}" &&
+        echo "$MBSYNC_PROFILE" >> "$MBSYNCRC_LOC"
+
+    echo "$MUTT_PROFILE" > "$ACC_DIR/$ID_NUM-$FULL_ADDR.muttrc"
+    [ ! -f "$MUTTRC_LOC" ] && touch "$MUTTRC_LOC"
+    ! grep -q "^source.*nmwiz-default.muttrc" "$MUTTRC_LOC" &&
+        echo "source $NMWIZ_DEFAULT_LOC $MARKER" >> "$MUTTRC_LOC"
+    ! grep "^source.*.muttrc" "$MUTTRC_LOC" | grep -qv "$NMWIZ_DEFAULT_LOC" &&
+        echo "source $ACC_DIR/$ID_NUM-$FULL_ADDR.muttrc $MARKER" >> "$MUTTRC_LOC"
+    echo "macro index,pager i$ID_NUM '<sync-mailbox><enter-command>source $ACC_DIR/$ID_NUM-$FULL_ADDR.muttrc<enter><change-folder>!<enter>;<check-stats>' \"switch to $FULL_ADDR\" $MARKER" >> "$MUTTRC_LOC"
+
+    notmuch_autoconf
+}
+
+notmuch_autoconf() {
+    [ -z "$NOTMUCH_CONFIG" ] && NOTMUCH_CONFIG="$HOME/.notmuch-config"
+    [ -f "$NOTMUCH_CONFIG" ] && return 0
+NOTMUCH_BASICS="[database]
+path=$MAIL_DIR
+[user]
+name=$REAL_NAME
+primary_email=$FULL_ADDR
+[new]
+tags=unread;inbox;
+ignore=.mbsyncstate;.uidvalidity
+[search]
+exclude_tags=deleted;spam;
+[maildir]
+synchronize_flags=true
+[crypto]
+gpg_path=gpg2"
+    echo "$NOTMUCH_BASICS" > "$NOTMUCH_CONFIG"
+}
+
+get_boxes() {
+    BOXES="$(curl --location-trusted -s -m 5 --user "$LOGIN:$(pass $PASSWORD_PREFIX$FULL_ADDR)" --url "${PROTOCOL:-imaps}://$IMAP_ADDRESS")"
+
+    [ -z "$BOXES" ] &&
+        emessage "[ ERROR ] log-on not successful" &&
+        return 1
+
+    MAILBOXES="$(echo "$BOXES" | sed "s/.*\" //;s/\"//g" | tr -d '')"
+}
+
+final_stage() {
+    echo "$MAILBOXES" | xargs -I {} mkdir -p "$MAIL_DIR/$FULL_ADDR/{}/cur" "$MAIL_DIR/$FULL_ADDR/{}/tmp" "$MAIL_DIR/$FULL_ADDR/{}/new"
+
+    sed -ibu "/$MARKER/d" "$ACC_DIR/$ID_NUM-$FULL_ADDR.muttrc"
+    rm -f "$ACC_DIR/$ID_NUM-$FULL_ADDR.muttrcbu"
+
+    MBX_APPEND="mailboxes $(echo "$MAILBOXES" | sed "s/^/\"=/;s/$/\"/" | paste -sd ' ' - )"
+
+    echo "$MBX_APPEND" >> "$ACC_DIR/$ID_NUM-$FULL_ADDR.muttrc"
+    [ -z "${ONLINE+x}" ] && echo "$FULL_ADDR (account #$ID_NUM) added successfully"
+    command -V urlview >/dev/null 2>&1 &&
+        [ ! -f "$HOME/.urlview" ] &&
+        echo "COMMAND \$BROWSER" > "$HOME/.urlview"
+    return 0
+}
+
+# ########## DELETE ##########
+
+delete() {
+    if [ -z "${FULL_ADDR+x}" ]; then
+        imessage "[ SELECT ] email account"
+        list_acc
+        read -r INPUT
+        MATCH="^$INPUT"
+    else
+        MATCH=" $FULL_ADDR$"
+        get_acc
+    fi
+
+    FULL_ADDR="$(echo "$ACCOUNTS" | grep "$MATCH" | cut -d' ' -f2)"
+
+    [ -z "$FULL_ADDR" ] &&
+        emessage "[ ERROR ] invalid account name" &&
+        return 1
+
+    sed -ibu "/IMAPStore $FULL_ADDR-remote$/,/# end profile/d" "$MBSYNCRC_LOC"
+    rm -rf "${CACHE_DIR:?}/${FULL_ADDR:?}" "$ACC_DIR/"[1-9]"-$FULL_ADDR.muttrc"
+
+    sed -ibu "/[0-9]-$FULL_ADDR.muttrc/d" "$MUTTRC_LOC"
+    rm -rf "$MUTTRC_LOC"bu
+
+    sed -ibu "/[0-9]-$FULL_ADDR/,/^\(\s*$\|account\)/d" "$MSMTPRC_LOC"
+    rm -rf "$MSMTPRC_LOC"bu
+
+    pass rm -f "$PASSWORD_PREFIX$FULL_ADDR" > /dev/null 2>&1
+
+    for file in "$MSMTPRC_LOC" "$MBSYNCRC_LOC"; do
+        tr '\n' '|' < "$file" | sed "s/||\+/||/g" | tr '|' '\n' >> "$file"bu
+        mv -f "$file"bu "$file"
+    done
+}
+
+# ########## HELP ##########
+
+nmwiz_help() { cat << EOF
+NMWIZ (neomutt wizard)
+
+USAGE:
+nmwiz [SUBCOMMANDS]
+
+SUBCOMMANDS
+check       - environment/dependencies check
+list        - list already configured email addresses
+add         - add an email address
+remove      - remove an already added email address
+sync        - sync mails
+help        - show help
+
+1) when at least 1 account is added, run \`mbsync -a\` to sync mails
+2) to change account's password, run \`pass edit ${PASSWORD_PREFIX}your@email.com\`
+EOF
+}
+
+case $1 in
+    check) set_installer && check_cert && check_dep && check_gpg ;;
+    list) nmwiz check && list_acc ;;
+    add) nmwiz check && ask_info && get_profiles && write_info && get_boxes && final_stage ;;
+    remove) nmwiz check && delete ;;
+    help) nmwiz_help ;;
+    *) nmwiz_help; exit 1 ;;
+esac
