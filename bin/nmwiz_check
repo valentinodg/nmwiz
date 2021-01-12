@@ -1,0 +1,63 @@
+#!/bin/bash
+
+. nmwiz_var
+
+set_installer() {
+    imessage "[ AUTOSET ] setting package manager"
+    . /etc/os-release
+    case $ID in
+        void) PM_INSTALL="sudo xbps-install -Sy" ;;
+        *) imessage "[ ERROR ] distro not recognized"; exit 1 ;;
+    esac
+}
+
+check_cert() {
+    imessage "[ AUTOCHK ] checking certificates"
+    for x in "/etc/ssl/certs/ca-certificates.crt" \
+        "/etc/pki/tls/certs/ca-bundle.crt" \
+        "/etc/ssl/ca-bundle.pem" \
+        "/etc/pki/tls/cacert.pem" \
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem" \
+        "/etc/ssl/cert.pem" \
+        "/usr/local/share/ca-certificates/"; do
+        [ -f $x ] && SSL_CERT=$x && break
+    done || {
+        echo "ca certificates not found"
+        echo "please install one or link it to /etc/ssl/certs/ca-certificates.crt"
+        exit 1
+    }
+}
+
+check_dep() {
+    imessage "[ AUTOCHK ] checking dependency: neomutt"
+    command -V neomutt >/dev/null 2>&1 || $PM_INSTALL neomutt
+    imessage "[ AUTOCHK ] checking dependency: gpg2"
+    command -V gpg2 >/dev/null 2>&1 || $PM_INSTALL gnupg2
+    imessage "[ AUTOCHK ] checking dependency: pass"
+    command -V pass >/dev/null 2>&1 || $PM_INSTALL pass
+    imessage "[ AUTOCHK ] checking dependency: isync"
+    command -V mbsync >/dev/null 2>&1 || $PM_INSTALL isync
+    imessage "[ AUTOCHK ] checking dependency: msmtp"
+    command -V msmtp >/dev/null 2>&1 || $PM_INSTALL msmtp
+}
+
+check_gpg() {
+    imessage "[ AUTOCHK ] checking gpg secret keys"
+    [ "$(gpg2 --list-secret-keys)" ] >/dev/null 2>&1 || {
+        emessage "[ ERROR ] no gpg secret keys"
+        emessage "[ RUN ] gpg2 --full-gen-key"
+        exit 1
+    }
+    imessage "[ AUTOCHK ] checking pass secret keys"
+    [ -r $PASSWORD_STORE_DIR/.gpg-id ] && 
+        gpg2 --list-secret-keys $(cat $PASSWORD_STORE_DIR/.gpg-id) >/dev/null 2>&1 || {
+        emessage "[ ERROR ] no pass secret keys"
+        emessage "[ RUN ] pass init <gpg@email.com>"
+        exit 1
+        }
+}
+
+set_installer
+check_cert
+check_dep
+check_gpg

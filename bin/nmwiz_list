@@ -1,0 +1,15 @@
+#!/bin/bash
+
+. nmwiz_var
+
+get_acc() {
+    ACCOUNTS="$(find -L "$ACC_DIR" -type f | grep -o "[0-9]-.*.muttrc" | sed "s/-/: /;s/\.muttrc$//" | sort -n)"
+}
+
+list_acc() {
+    get_acc &&
+        [ -n "$ACCOUNTS" ] &&
+        echo "$ACCOUNTS"
+}
+
+list_acc

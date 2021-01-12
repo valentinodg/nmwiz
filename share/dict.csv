@@ -1,0 +1,2 @@
+ADDRESS,IMAP,IMAP_PORT,SMTP,SMTP_PORT
+student.univaq.*,outlook.office365.com,993,smtp.office365.com,587
