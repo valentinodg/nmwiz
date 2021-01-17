@@ -25,7 +25,7 @@ MARKER="# nmwwiz-autogen"
 # for online mails
 # ONLINE=True
 
-alias mbsync='mbsync -c "$MBSYNCRC_LOC"'
+# alias mbsync='mbsync -c "$MBSYNCRC_LOC"'
 
 imessage() { tput setaf 6; echo $1; tput sgr0 ;}
 kmessage() { tput setaf 5; echo $1; tput sgr0 ;}
@@ -110,13 +110,13 @@ ask_info() {
         imessage "[ INSERT ] full email address <your@email.com>"
         read -r FULL_ADDR
     done
-    [ -f $MBSYNCRC_LOC ] && grep -q "Channel\s*$FULL_ADDR" "$MBSYNCRC_LOC" && {
+    [ -f "$MBSYNCRC_LOC" ] && grep -q "Channel\s*$FULL_ADDR" "$MBSYNCRC_LOC" && {
         emessage "[ EXIT ] $FULL_ADDR already added"
         exit 1
     }
     parse_dict
     [ "$SMTP_PORT" = 465 ] && TLS_LINE="tls_starttls off"
-    [ -z $REAL_NAME ] && REAL_NAME="${FULL_ADDR%%@*}"
+    [ -z "$REAL_NAME" ] && REAL_NAME="${FULL_ADDR%%@*}"
     LOGIN="${LOGIN:-$FULL_ADDR}"
     if [ -n "${PASSWORD+x}" ]; then
         create_passw
@@ -170,6 +170,7 @@ get_profiles() {
         1143) IMAP_SSL=None ;;
         143) IMAP_SSL=STARTTLS ;;
     esac
+    check_cert
 
 MSMTP_HEADER="defaults
 auth on
@@ -186,6 +187,7 @@ user $LOGIN
 passwordeval \"pass $PASSWORD_PREFIX$FULL_ADDR\"
 $TLS_LINE
 "
+
 MBSYNC_PROFILE="IMAPStore $FULL_ADDR-remote
 Host $IMAP_ADDRESS
 Port ${IMAP_PORT:-993}
@@ -228,7 +230,7 @@ bind index,pager g noop
 bind index,pager M noop
 bind index,pager C noop
 bind index gg first-entry
-macro index o \"<shell-escape>nmwiz_sync $FULL_ADDR<enter>\" \"run mbsync to sync $FULL_ADDR\"
+macro index o \"<shell-escape>nmwiz s $FULL_ADDR<enter>\" \"run mbsync to sync $FULL_ADDR\"
 unmailboxes *
 unalternates *
 "
@@ -271,7 +273,7 @@ write_info() {
         }
     done
 
-    [ ! -f "$MSMTPRC_LOC" ] && echo "MSMTP_HEADER" > "$MSMTPRC_LOC"
+    [ ! -f "$MSMTPRC_LOC" ] && echo "$MSMTP_HEADER" > "$MSMTPRC_LOC"
     echo "$MSMTP_PROFILE" >> "$MSMTPRC_LOC"
 
     [ -z "${ONLINE+x}" ] &&
@@ -280,7 +282,7 @@ write_info() {
 
     echo "$MUTT_PROFILE" > "$ACC_DIR/$ID_NUM-$FULL_ADDR.muttrc"
     [ ! -f "$MUTTRC_LOC" ] && touch "$MUTTRC_LOC"
-    ! grep -q "^source.*nmwiz-default.muttrc" "$MUTTRC_LOC" &&
+    ! grep -q "^source.*nmwiz-def.muttrc" "$MUTTRC_LOC" &&
         echo "source $NMWIZ_DEFAULT_LOC $MARKER" >> "$MUTTRC_LOC"
     ! grep "^source.*.muttrc" "$MUTTRC_LOC" | grep -qv "$NMWIZ_DEFAULT_LOC" &&
         echo "source $ACC_DIR/$ID_NUM-$FULL_ADDR.muttrc $MARKER" >> "$MUTTRC_LOC"
@@ -338,30 +340,26 @@ final_stage() {
 # ########## DELETE ##########
 
 delete() {
-    if [ -z "${FULL_ADDR+x}" ]; then
-        imessage "[ SELECT ] email account"
-        list_acc
-        read -r INPUT
-        MATCH="^$INPUT"
-    else
-        MATCH=" $FULL_ADDR$"
-        get_acc
-    fi
+    imessage "[ SELECT ] select account to synchonize"
+    kmessage "[ SUGST ] type 'e' to exit"
+    account_sel
 
-    FULL_ADDR="$(echo "$ACCOUNTS" | grep "$MATCH" | cut -d' ' -f2)"
+    FULL_ADDR="$ADDR"
 
     [ -z "$FULL_ADDR" ] &&
         emessage "[ ERROR ] invalid account name" &&
         return 1
 
     sed -ibu "/IMAPStore $FULL_ADDR-remote$/,/# end profile/d" "$MBSYNCRC_LOC"
+    rm -f "$MBSYNCRC_LOC"bu
+
     rm -rf "${CACHE_DIR:?}/${FULL_ADDR:?}" "$ACC_DIR/"[1-9]"-$FULL_ADDR.muttrc"
 
     sed -ibu "/[0-9]-$FULL_ADDR.muttrc/d" "$MUTTRC_LOC"
-    rm -rf "$MUTTRC_LOC"bu
+    rm -f "$MUTTRC_LOC"bu
 
-    sed -ibu "/[0-9]-$FULL_ADDR/,/^\(\s*$\|account\)/d" "$MSMTPRC_LOC"
-    rm -rf "$MSMTPRC_LOC"bu
+    sed -ibu "/account $FULL_ADDR/,/^\(\s*$\|account\)/d" "$MSMTPRC_LOC"
+    rm -f "$MSMTPRC_LOC"bu
 
     pass rm -f "$PASSWORD_PREFIX$FULL_ADDR" > /dev/null 2>&1
 
@@ -371,32 +369,74 @@ delete() {
     done
 }
 
-# ########## HELP ##########
+# ########## SYNC ##########
 
-nmwiz_help() { cat << EOF
-NMWIZ (neomutt wizard)
-
-USAGE:
-nmwiz [SUBCOMMANDS]
-
-SUBCOMMANDS
-check       - environment/dependencies check
-list        - list already configured email addresses
-add         - add an email address
-remove      - remove an already added email address
-sync        - sync mails
-help        - show help
-
-1) when at least 1 account is added, run \`mbsync -a\` to sync mails
-2) to change account's password, run \`pass edit ${PASSWORD_PREFIX}your@email.com\`
-EOF
+sync() {
+    imessage "[ SELECT ] select account to synchonize"
+    kmessage "[ SUGST ] type 'e' to exit"
+    account_sel
+    echo "synchonizing account $ADDR"
 }
 
-case $1 in
-    check) set_installer && check_cert && check_dep && check_gpg ;;
-    list) nmwiz check && list_acc ;;
-    add) nmwiz check && ask_info && get_profiles && write_info && get_boxes && final_stage ;;
-    remove) nmwiz check && delete ;;
-    help) nmwiz_help ;;
-    *) nmwiz_help; exit 1 ;;
-esac
+sync_all() {
+    # accounts="$(grep "Channel" "$MBSYNCRC_LOC" | cut -f2 -d' ')"
+    accounts="$(awk '/^Channel/ {print $2}' "$MBSYNCRC_LOC")"
+    mbsync -c "$MBSYNCRC_LOC" "$accounts"
+}
+
+# ########## HELP ##########
+
+nmwiz_help() { tput setaf 5 && cat << EOF
+c  (check)       - environment/dependencies check
+l  (list)        - list already configured email addresses
+a  (add)         - add an email address
+r  (remove)      - remove an already added email address
+s  (sync)        - sync selected email address
+y  (sync_all)    - sync all email addresses
+h  (help)        - show help
+EOF
+tput sgr0
+}
+
+# ########## SELECT ##########
+
+account_sel() {
+    SPROMPT="(select) "
+    while : ; do
+        list_acc
+        tput setaf 2
+        echo -n "$SPROMPT"
+        read -n1 SEL
+        echo
+        tput sgr0
+        case $SEL in
+            ) continue ;;
+            *) ADDR="$(echo "$ACCOUNTS" | grep "^$SEL" | cut -f2 -d' ')" &&
+                [ ! -z "$ADDR" ] && break || continue ;;
+        esac
+    done
+}
+
+# ########## MAIN ##########
+
+PROMPT="(nmwiz) "
+imessage "[ WELCOME ] neomutt wizard (type 'h' for help)"
+while : ; do 
+    tput setaf 1
+    echo -n "$PROMPT"
+    read -r NMWIZ_COMMAND
+    tput sgr0
+    case $NMWIZ_COMMAND in 
+        ) continue ;;
+        c) set_installer && check_cert && check_dep && check_gpg ;;
+        l) list_acc ;;
+        a) ask_info && get_profiles && write_info && get_boxes && final_stage ;;
+        r) delete ;;
+        h) nmwiz_help ;;
+        s) sync ;;
+        y) sync_all ;;
+        x) account_sel ;;
+        q) kmessage "[ EXIT ]"; exit 0 ;;
+        *) kmessage "[ ERROR ] invalid command (type 'h' for help)" ;;
+    esac
+done
