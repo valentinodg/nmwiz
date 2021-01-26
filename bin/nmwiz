@@ -25,8 +25,6 @@ MARKER="# nmwwiz-autogen"
 # for online mails
 # ONLINE=True
 
-# alias mbsync='mbsync -c "$MBSYNCRC_LOC"'
-
 imessage() { tput setaf 6; echo $1; tput sgr0 ;}
 kmessage() { tput setaf 5; echo $1; tput sgr0 ;}
 emessage() { tput setaf 1; echo $1; tput sgr0 ;}
@@ -162,6 +160,7 @@ get_passw() {
 }
 
 get_profiles() {
+    imessage "[ AUTOCONF ] generate profiles"
     unset MSMTP_HEADER
     unset MSMTP_PROFILE
     unset MBSYNC_PROFILE
@@ -260,9 +259,13 @@ fi
 }
 
 write_info() {
+    imessage "[ AUTORUN ] create $ACC_DIR"
     mkdir -p "$ACC_DIR"
+    imessage "[ AUTORUN ] create $CACHE_DIR/$FULL_ADDR/bodies"
     mkdir -p "$CACHE_DIR/$FULL_ADDR/bodies"
+    imessage "[ AUTORUN ] create $MSMTP_DIR"
     mkdir -p "$MSMTP_DIR"
+    imessage "[ AUTORUN ] create $MAIL_DIR/$FULL_ADDR"
     mkdir -p "$MAIL_DIR/$FULL_ADDR"
 
     get_acc
@@ -273,14 +276,21 @@ write_info() {
         }
     done
 
+    imessage "[ AUTORUN ] write|append $MSMTPRC_LOC"
     [ ! -f "$MSMTPRC_LOC" ] && echo "$MSMTP_HEADER" > "$MSMTPRC_LOC"
     echo "$MSMTP_PROFILE" >> "$MSMTPRC_LOC"
 
+    imessage "if ! online account"
+    imessage "[ AUTORUN ] create $MBSYNC_DIR"
+    imessage "[ AUTORUN ] write|append $MBSYNCRC_LOC"
     [ -z "${ONLINE+x}" ] &&
         mkdir -p "${MBSYNC_DIR}" &&
         echo "$MBSYNC_PROFILE" >> "$MBSYNCRC_LOC"
 
+    imessage "[ AUTORUN ] write|append $ACC_DIR/$ID_NUM-$FULL_ADDR.muttrc"
     echo "$MUTT_PROFILE" > "$ACC_DIR/$ID_NUM-$FULL_ADDR.muttrc"
+
+    imessage "[ AUTORUN ] write|append $MUTTRC_LOC"
     [ ! -f "$MUTTRC_LOC" ] && touch "$MUTTRC_LOC"
     ! grep -q "^source.*nmwiz-def.muttrc" "$MUTTRC_LOC" &&
         echo "source $NMWIZ_DEFAULT_LOC $MARKER" >> "$MUTTRC_LOC"
@@ -292,6 +302,8 @@ write_info() {
 }
 
 notmuch_autoconf() {
+    imessage "if ! exists"
+    imessage "[ AUTORUN ] write|append $HOME/.notmuch-config"
     [ -z "$NOTMUCH_CONFIG" ] && NOTMUCH_CONFIG="$HOME/.notmuch-config"
     [ -f "$NOTMUCH_CONFIG" ] && return 0
 NOTMUCH_BASICS="[database]
@@ -312,6 +324,7 @@ gpg_path=gpg2"
 }
 
 get_boxes() {
+    imessage "[ AUTORUN ] retrieve mailboxes from imap server"
     BOXES="$(curl --location-trusted -s -m 5 --user "$LOGIN:$(pass $PASSWORD_PREFIX$FULL_ADDR)" --url "${PROTOCOL:-imaps}://$IMAP_ADDRESS")"
 
     [ -z "$BOXES" ] &&
@@ -322,8 +335,10 @@ get_boxes() {
 }
 
 final_stage() {
+    imessage "[ AUTORUN ] create $MAIL_DIR/$FULL_ADDR/<mailbox>/{cur,tmp,new} dirs"
     echo "$MAILBOXES" | xargs -I {} mkdir -p "$MAIL_DIR/$FULL_ADDR/{}/cur" "$MAIL_DIR/$FULL_ADDR/{}/tmp" "$MAIL_DIR/$FULL_ADDR/{}/new"
 
+    imessage "[ AUTORUN ] final write|append $ACC_DIR/$ID_NUM-$FULL_ADDR.muttrc"
     sed -ibu "/$MARKER/d" "$ACC_DIR/$ID_NUM-$FULL_ADDR.muttrc"
     rm -f "$ACC_DIR/$ID_NUM-$FULL_ADDR.muttrcbu"
 
@@ -350,19 +365,26 @@ delete() {
         emessage "[ ERROR ] invalid account name" &&
         return 1
 
+    imessage "[ AUTOWRITE ] fix $MBSYNCRC_LOC"
     sed -ibu "/IMAPStore $FULL_ADDR-remote$/,/# end profile/d" "$MBSYNCRC_LOC"
     rm -f "$MBSYNCRC_LOC"bu
 
+    imessage "[ AUTOREMOVE ] remove $CACHE_DIR/$FULL_ADDR"
+    imessage "[ AUTOREMOVE ] remove $ACC_DIR/$FULL_ADDR"
     rm -rf "${CACHE_DIR:?}/${FULL_ADDR:?}" "$ACC_DIR/"[1-9]"-$FULL_ADDR.muttrc"
 
+    imessage "[ AUTOWRITE ] fix $MUTTRC_LOC"
     sed -ibu "/[0-9]-$FULL_ADDR.muttrc/d" "$MUTTRC_LOC"
     rm -f "$MUTTRC_LOC"bu
 
+    imessage "[ AUTOWRITE ] fix $MSMTPRC_LOC"
     sed -ibu "/account $FULL_ADDR/,/^\(\s*$\|account\)/d" "$MSMTPRC_LOC"
     rm -f "$MSMTPRC_LOC"bu
 
+    imessage "[ AUTOREMOVE ] remove $PASSWORD_PREFIX$FULL_ADDR using pass rm"
     pass rm -f "$PASSWORD_PREFIX$FULL_ADDR" > /dev/null 2>&1
 
+    imessage "[ AUTOWRITE ] fix spaces in $MSMTPRC_LOC & $MBSYNCRC_LOC"
     for file in "$MSMTPRC_LOC" "$MBSYNCRC_LOC"; do
         tr '\n' '|' < "$file" | sed "s/||\+/||/g" | tr '|' '\n' >> "$file"bu
         mv -f "$file"bu "$file"
